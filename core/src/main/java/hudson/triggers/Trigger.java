@@ -53,6 +53,7 @@ import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.Timer;
@@ -249,9 +250,8 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
         }
     }
 
-    private static Future previousSynchronousPolling;
+    private static final AtomicReference<Future<?>> previousSynchronousPolling = new AtomicReference<>();
 
-    @SuppressFBWarnings(value = "LI_LAZY_INIT_STATIC", justification = "TODO needs triage")
     public static void checkTriggers(final Calendar cal) {
         Jenkins inst = Jenkins.get();
 
@@ -261,12 +261,13 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
             LOGGER.fine("using synchronous polling");
 
             // Check that previous synchronous polling job is done to prevent piling up too many jobs
-            if (previousSynchronousPolling == null || previousSynchronousPolling.isDone()) {
+            Future<?> previous = previousSynchronousPolling.getPlain();
+            if (previous == null || previous.isDone()) {
                 // Process SCMTriggers in the order of dependencies. Note that the crontab spec expressed per-project is
                 // ignored, only the global setting is honored. The polling job is submitted only if the previous job has
                 // terminated.
                 // FIXME allow to set a global crontab spec
-                previousSynchronousPolling = scmd.getExecutor().submit(new DependencyRunner(p -> {
+                Future<?> submitted = scmd.getExecutor().submit(new DependencyRunner(p -> {
                     for (Trigger t : (Collection<Trigger>) p.getTriggers().values()) {
                         if (t instanceof SCMTrigger) {
                             if (t.job != null) {
@@ -278,6 +279,7 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
                         }
                     }
                 }));
+                previousSynchronousPolling.compareAndSet(previous, submitted);
             } else {
                 LOGGER.fine("synchronous polling has detected unfinished jobs, will not trigger additional jobs.");
             }
